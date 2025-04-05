@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Scheduler</title>
+    <style>
+/* styles.css */
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+}
+.toolbar {
+    margin-bottom: 20px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: center;
+}
+th {
+    background-color: #f2f2f2;
+}
+.icon-btn {
+    cursor: pointer;
+    margin: 0 5px;
+}
+.hidden {
+    display: none;
+}
+@media (max-width: 600px) {
+    table, thead, tbody, th, td, tr {
+        display: block;
+    }
+    th {
+        display: none;
+    }
+    td {
+        position: relative;
+        padding-left: 50%;
+    }
+    td:before {
+        position: absolute;
+        left: 6px;
+        content: attr(data-label);
+        font-weight: bold;
+    }
+}
+</style>
+    <script src="https://apis.google.com/js/api.js"></script>
+</head>
+<body>
+    <div class="toolbar">
+        <select id="viewSelector">
+            <option value="Daily">Daily</option>
+            <option value="Weekly">Weekly</option>
+            <option value="Monthly">Monthly</option>
+            <option value="Yearly">Yearly</option>
+            <option value="All" selected>All</option>
+            <option value="Completed">Completed</option>
+        </select>
+        <label for="reminderTime">Reminder Time:</label>
+        <input type="time" id="reminderTime">
+        <label><input type="checkbox" id="reminderEnabled"> Enable</label>
+        <button id="exportBtn">Export</button>
+        <button id="importBtn">Import</button>
+    </div>
+    <table id="taskTable">
+      <thead>
+          <tr id="tableHeaderRow">
+              <!-- Dynamic headers will be rendered here -->
+          </tr>
+      </thead>
+        <tbody>
+            <!-- Task rows will be inserted here -->
+        </tbody>
+    </table>
+    <script>
+// script.js
+document.addEventListener('DOMContentLoaded', () => {
+    const taskTable = document.getElementById('taskTable').getElementsByTagName('tbody')[0];
+    const viewSelector = document.getElementById('viewSelector');
+    const reminderTimeInput = document.getElementById('reminderTime');
+    const exportBtn = document.getElementById('exportBtn');
+    const importBtn = document.getElementById('importBtn');
+
+    // Load tasks from localStorage
+    let tasks = JSON.parse(localStorage.getItem('tasks')) || [];
+
+    function renderTasks() {
+        const selectedView = viewSelector.value;
+        taskTable.innerHTML = '';
+
+        const headerRow = document.getElementById('tableHeaderRow');
+        headerRow.innerHTML = '';
+
+        if (selectedView === 'All') {
+            headerRow.innerHTML = `
+                <th>Task</th>
+                <th>Frequency</th>
+                <th colspan="99"><div style="text-align:center;">Status</div></th>
+                <th></th>
+            `;
+        } else {
+            const headers = {
+                'Daily': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                'Weekly': ['WK1', 'WK2', 'WK3', 'WK4'],
+                'Monthly': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                'Yearly': [new Date().getFullYear().toString()]
+            };
+            headerRow.innerHTML = `<th>Task</th><th>Frequency</th>`;
+            headerRow.innerHTML += headers[selectedView]
+                .map(label => `<th><div style="text-align:center;">${label}</div></th>`)
+                .join('');
+            headerRow.innerHTML += `<th></th>`;
+        }
+
+        tasks.forEach((task, index) => {
+            const shouldRender =
+                selectedView === 'All' ||
+                task.frequency === selectedView ||
+                (selectedView === 'Completed' && task.completed);
+
+            if (!shouldRender) return;
+
+            const row = taskTable.insertRow();
+            const nameCell = row.insertCell();
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.value = task.name;
+            nameInput.disabled = !task.editing;
+if (task.editing) {
+    nameInput.oninput = () => task.name = nameInput.value;
+}
+
+            nameCell.appendChild(nameInput);
+
+            const freqCell = row.insertCell();
+            const freqSelect = document.createElement('select');
+            ['Daily', 'Weekly', 'Monthly', 'Yearly'].forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f;
+                opt.textContent = f;
+                opt.selected = task.frequency === f;
+                freqSelect.appendChild(opt);
+            });
+            freqSelect.onchange = () => {
+                task.frequency = freqSelect.value;
+                const sizes = { Daily: 7, Weekly: 4, Monthly: 12, Yearly: 1 };
+                task.completions = new Array(sizes[task.frequency]).fill(false);
+                saveTasks();
+                renderTasks();
+            };
+            freqSelect.disabled = !task.editing;
+            if (task.editing) {
+                freqSelect.onchange = () => {
+                    task.frequency = freqSelect.value;
+                    const sizes = { Daily: 7, Weekly: 4, Monthly: 12, Yearly: 1 };
+                    task.completions = new Array(sizes[task.frequency]).fill(false);
+                    saveTasks();
+                    renderTasks();
+                };
+              }
+            freqCell.appendChild(freqSelect);
+
+            const freqMap = {
+                'Daily': 7,
+                'Weekly': 4,
+                'Monthly': 12,
+                'Yearly': 1
+            };
+            const cols = freqMap[task.frequency] || 0;
+            for (let i = 0; i < cols; i++) {
+                const cell = row.insertCell();
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = task.completions?.[i] || false;
+                checkbox.disabled = task.completed;
+                checkbox.addEventListener('change', () => {
+                    task.completions[i] = checkbox.checked;
+                    checkTaskCompletion(task);
+                    saveTasks();
+                    renderTasks();
+                });
+                cell.appendChild(checkbox);
+            }
+
+            const statusCell = row.insertCell();
+            statusCell.innerHTML = getStatusBubble(task);
+
+            const actionsCell = row.insertCell();
+
+            actionsCell.innerHTML = `
+                <span class="icon-btn" onclick="saveTask(${index})">S</span>
+                <span class="icon-btn" onclick="startTask(${index})">ST</span>
+                <span class="icon-btn" onclick="pauseTask(${index})">P</span>
+                <span class="icon-btn" onclick="editTask(${index})">*</span>
+                <span class="icon-btn" onclick="deleteTask(${index})">-</span>
+                <span class="icon-btn" onclick="toggleComplete(${index})">!</span>
+                <span class="icon-btn" onclick="syncWithGoogleCalendar(${index})">G</span>
+            `;
+        });
+    }
+
+
+
+    // Insert dynamic columns based on frequency
+    function insertDynamicColumns(row, task) {
+        const frequencies = {
+            'Daily': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+            'Weekly': ['WK1', 'WK2', 'WK3', 'WK4'],
+            'Monthly': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+            'Yearly': [new Date().getFullYear().toString()]
+        };
+        frequencies[task.frequency].forEach((period, idx) => {
+            const cell = row.insertCell();
+            cell.setAttribute('data-label', period);
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = task.completions ? task.completions[idx] : false;
+            checkbox.disabled = task.completed;
+            checkbox.addEventListener('change', () => {
+                task.completions[idx] = checkbox.checked;
+                checkTaskCompletion(task);
+                saveTasks();
+              });
+cell.appendChild(checkbox);
+});
+}
+
+function checkTaskCompletion(task) {
+const allChecked = task.completions.every(Boolean);
+if (allChecked) {
+task.completed = true;
+task.completedAt = new Date().toISOString();
+}
+}
+
+function saveTasks() {
+localStorage.setItem('tasks', JSON.stringify(tasks));
+}
+
+window.editTask = function(index) {
+    const task = tasks[index];
+
+    if (!task.editing) {
+        task.editing = true;
+    } else {
+        task.editing = false;
+        saveTasks(); // Save on exiting edit mode
+    }
+
+    renderTasks();
+}
+
+window.deleteTask = function(index) {
+if (confirm("Delete this task?")) {
+tasks.splice(index, 1);
+saveTasks();
+renderTasks();
+}
+}
+
+window.toggleComplete = function(index) {
+const task = tasks[index];
+if (!task.completed) {
+task.completed = true;
+task.completedAt = new Date().toISOString();
+}
+saveTasks();
+renderTasks();
+}
+
+window.syncWithGoogleCalendar = function(index) {
+alert("Google Calendar integration coming soon! 🚀");
+// Here you would integrate with Google Calendar API
+}
+
+// Add Task Button (assume auto-add a new blank task for demo)
+document.body.insertAdjacentHTML('beforeend', `<button id="addTaskBtn">+ Add Task</button>`);
+document.getElementById('addTaskBtn').addEventListener('click', () => {
+    const newTask = {
+        name: '',
+        frequency: 'Daily',
+        completions: new Array(7).fill(false),
+        completed: false,
+        started: false,
+        paused: false,
+        editing: true // default to editing mode
+    };
+    tasks.push(newTask);
+    saveTasks();
+    renderTasks();
+});
+
+
+// View filter change
+viewSelector.addEventListener('change', renderTasks);
+
+// EXPORT FUNCTION
+exportBtn.addEventListener('click', () => {
+const data = JSON.stringify({ tasks, reminderTime: reminderTimeInput.value });
+const blob = new Blob([data], { type: 'text/plain' });
+const url = URL.createObjectURL(blob);
+const now = new Date();
+const timestamp = now.toISOString().replace(/[:.]/g, '-');
+const link = document.createElement('a');
+link.href = url;
+link.download = `ToDo(${timestamp}).txt`;
+document.body.appendChild(link);
+link.click();
+link.remove();
+URL.revokeObjectURL(url);
+});
+
+// IMPORT FUNCTION
+importBtn.addEventListener('click', () => {
+const input = document.createElement('input');
+input.type = 'file';
+input.accept = 'text/plain';
+input.addEventListener('change', (e) => {
+const file = e.target.files[0];
+const reader = new FileReader();
+reader.onload = (evt) => {
+    try {
+        const imported = JSON.parse(evt.target.result);
+        tasks = imported.tasks;
+        reminderTimeInput.value = imported.reminderTime || '';
+        saveTasks();
+        renderTasks();
+    } catch (err) {
+        alert("Failed to import. Invalid file format.");
+    }
+};
+reader.readAsText(file);
+});
+input.click();
+});
+
+// DAILY REMINDER CHECK
+function scheduleReminderCheck() {
+    setInterval(() => {
+        const [h, m] = (reminderTimeInput.value || '').split(':');
+        const enabled = document.getElementById('reminderEnabled').checked;
+        if (!enabled || !h || !m) return;
+
+        const now = new Date();
+        if (now.getHours() === +h && now.getMinutes() === +m) {
+            const dueTasks = tasks.filter(t => t.started && !t.paused && !t.completed);
+
+            if (dueTasks.length > 0) {
+                const audio = new Audio("https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg");
+                audio.loop = true;
+
+                audio.play().then(() => {
+                    if (confirm(`Reminder! You have ${dueTasks.length} pending tasks. Dismiss?`)) {
+                        audio.pause();
+                    }
+                }).catch(err => {
+                    console.error("Audio play failed:", err);
+                });
+            }
+        }
+    }, 60000); // Every minute
+}
+
+
+// DAILY AUTO EXPORT (once per day)
+function autoExport() {
+const todayKey = `ToDoAuto-${new Date().toISOString().split('T')[0]}`;
+if (!localStorage.getItem(todayKey)) {
+exportBtn.click();
+localStorage.setItem(todayKey, 'done');
+}
+}
+
+window.saveTask = function(index) {
+    const task = tasks[index];
+    task.editing = false;
+    saveTasks();
+    showNotification('Task saved!', 'green');
+    renderTasks();
+};
+
+
+window.startTask = function(index) {
+    tasks[index].started = true;
+    tasks[index].paused = false;
+    saveTasks();
+    showNotification("Task started", "green");
+    renderTasks(); // ✅ ensure immediate UI update
+}
+
+window.pauseTask = function(index) {
+    tasks[index].paused = true;
+    saveTasks();
+    showNotification("Task paused", "yellow");
+    renderTasks(); // ✅ ensure immediate UI update
+}
+
+
+function getStatusBubble(task) {
+    let status = '';
+    let color = '';
+
+    if (task.completed) {
+        status = 'Complete';
+        color = 'blue';
+    } else if (task.paused) {
+        status = 'Paused';
+        color = 'goldenrod';
+    } else if (task.started) {
+        status = 'Active';
+        color = 'green';
+    }
+
+    return `<span style="padding: 4px 8px; border-radius: 12px; background-color: ${color}; color: white; font-size: 0.8em;">${status}</span>`;
+}
+
+function saveTasks() {
+    localStorage.setItem('tasks', JSON.stringify(tasks));
+    localStorage.setItem('reminderEnabled', document.getElementById('reminderEnabled').checked);
+}
+
+
+function showNotification(msg, color) {
+    const n = document.createElement('div');
+    n.textContent = msg;
+    n.style.position = 'fixed';
+    n.style.top = '10px';
+    n.style.right = '10px';
+    n.style.padding = '10px';
+    n.style.backgroundColor = color;
+    n.style.color = 'white';
+    n.style.zIndex = 1000;
+    document.body.appendChild(n);
+    setTimeout(() => n.remove(), 2000);
+}
+
+reminderTimeInput.addEventListener('change', () => saveTasks());
+
+// INITIALIZE APP
+reminderTimeInput.value = (JSON.parse(localStorage.getItem('reminderTime')) || '') || '';
+renderTasks();
+scheduleReminderCheck();
+autoExport();
+});
+
+document.getElementById('reminderEnabled').checked = localStorage.getItem('reminderEnabled') === 'true';
+
+
+</script>
+</body>
+</html>
