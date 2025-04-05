@@ -200,7 +200,6 @@ if (task.editing) {
                 <span class="icon-btn" onclick="pauseTask(${index})">P</span>
                 <span class="icon-btn" onclick="editTask(${index})">*</span>
                 <span class="icon-btn" onclick="deleteTask(${index})">-</span>
-                <span class="icon-btn" onclick="toggleComplete(${index})">!</span>
                 <span class="icon-btn" onclick="syncWithGoogleCalendar(${index})">G</span>
             `;
         });
@@ -350,14 +349,37 @@ function scheduleReminderCheck() {
 
         const now = new Date();
         if (now.getHours() === +h && now.getMinutes() === +m) {
-            const dueTasks = tasks.filter(t => t.started && !t.paused && !t.completed);
+            const dayIndex = (now.getDay() + 6) % 7; // Monday = 0, Sunday = 6
+
+            const dueTasks = tasks.filter(t => {
+                if (!t.started || t.paused) return false;
+
+                if (t.frequency === 'Daily') {
+                    return !t.completions?.[dayIndex];
+                }
+
+                if (t.frequency === 'Weekly') {
+                    const weekIndex = Math.floor(now.getDate() / 7); // crude week calc
+                    return !t.completions?.[weekIndex];
+                }
+
+                if (t.frequency === 'Monthly') {
+                    const monthIndex = now.getMonth();
+                    return !t.completions?.[monthIndex];
+                }
+
+                if (t.frequency === 'Yearly') {
+                    return !t.completions?.[0];
+                }
+
+                return false;
+            });
 
             if (dueTasks.length > 0) {
                 const audio = new Audio("https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg");
                 audio.loop = true;
-
                 audio.play().then(() => {
-                    if (confirm(`Reminder! You have ${dueTasks.length} pending tasks. Dismiss?`)) {
+                    if (confirm(`Reminder! You have ${dueTasks.length} pending tasks for today. Dismiss?`)) {
                         audio.pause();
                     }
                 }).catch(err => {
@@ -365,8 +387,9 @@ function scheduleReminderCheck() {
                 });
             }
         }
-    }, 60000); // Every minute
+    }, 60000); // check every minute
 }
+
 
 
 // DAILY AUTO EXPORT (once per day)
@@ -426,6 +449,14 @@ function saveTasks() {
     localStorage.setItem('reminderEnabled', document.getElementById('reminderEnabled').checked);
 }
 
+function getWeekNumber(d) {
+    d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+}
+
 
 function showNotification(msg, color) {
     const n = document.createElement('div');
@@ -441,6 +472,54 @@ function showNotification(msg, color) {
     setTimeout(() => n.remove(), 2000);
 }
 
+function resetRecurringTasks() {
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+
+    tasks.forEach(task => {
+        if (!task.started || task.paused) return;
+
+        const lastReset = new Date(task.lastReset || 0);
+
+        let shouldReset = false;
+
+        if (task.frequency === 'Daily') {
+            const lastWeek = getWeekNumber(lastReset);
+            const thisWeek = getWeekNumber(today);
+            shouldReset = thisWeek !== lastWeek;
+        }
+
+        if (task.frequency === 'Weekly') {
+            const lastMonth = lastReset.getMonth();
+            const thisMonth = today.getMonth();
+            shouldReset = thisMonth !== lastMonth;
+        }
+
+        if (task.frequency === 'Monthly') {
+            const lastYear = lastReset.getFullYear();
+            const thisYear = today.getFullYear();
+            const lastMonth = lastReset.getMonth();
+            const thisMonth = today.getMonth();
+            shouldReset = lastMonth !== thisMonth || lastYear !== thisYear;
+        }
+
+        if (task.frequency === 'Yearly') {
+            shouldReset = lastReset.getFullYear() !== today.getFullYear();
+        }
+
+        if (shouldReset) {
+            const cols = { Daily: 7, Weekly: 4, Monthly: 12, Yearly: 1 };
+            task.completions = new Array(cols[task.frequency]).fill(false);
+            task.completed = false;
+            delete task.completedAt;
+            task.lastReset = todayStr;
+        }
+    });
+
+    saveTasks();
+}
+
+
 reminderTimeInput.addEventListener('change', () => saveTasks());
 
 // INITIALIZE APP
@@ -448,6 +527,10 @@ reminderTimeInput.value = (JSON.parse(localStorage.getItem('reminderTime')) || '
 renderTasks();
 scheduleReminderCheck();
 autoExport();
+
+// ✅ Add this ↓↓↓
+resetRecurringTasks(); // Run once on load
+setInterval(resetRecurringTasks, 1000 * 60 * 60); // Every hour (optional safety)
 });
 
 document.getElementById('reminderEnabled').checked = localStorage.getItem('reminderEnabled') === 'true';
